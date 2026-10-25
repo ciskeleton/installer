@@ -1,0 +1,733 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * CiSkeleton project installer.
+ *
+ * Usage:
+ *   csk new my-project
+ *   csk new /absolute/path/to/my-project
+ */
+
+defined('DS') || define('DS', DIRECTORY_SEPARATOR);
+
+final class CskInstaller
+{
+    private const GITHUB_OWNER = 'ciskeleton';
+
+    private const INSTALL_MODE_RELEASE = 'release';
+    private const INSTALL_MODE_CLONE = 'clone';
+
+    private const CORE_REPOSITORY = 'core';
+    private const APP_REPOSITORY = 'app-default';
+    private const COMMON_REPOSITORY = 'common';
+
+    /**
+     * Available CiSkeleton language packs.
+     *
+     * Key format:
+     * - repository suffix
+     * - destination directory name under system/language/
+     *
+     * Example:
+     * - lang-french => system/language/french
+     *
+     * @var array<string, string>
+     */
+    private const LANGUAGES = [
+        'arabic' => 'Arabic',
+        'armenian' => 'Armenian',
+        'bengali' => 'Bengali',
+        'brazilian' => 'Brazilian Portuguese',
+        'bulgarian' => 'Bulgarian',
+        'catalan' => 'Catalan',
+        'chinese' => 'Simplified Chinese',
+        'croatian' => 'Croatian',
+        'czech' => 'Czech',
+        'danish' => 'Danish',
+        'dutch' => 'Dutch',
+        'english' => 'English',
+        'estonian' => 'Estonian',
+        'filipino' => 'Filipino',
+        'finnish' => 'Finnish',
+        'french' => 'French',
+        'georgian' => 'Georgian',
+        'german' => 'German',
+        'greek' => 'Greek',
+        'hindi' => 'Hindi',
+        'hungarian' => 'Hungarian',
+        'indonesian' => 'Indonesian',
+        'italian' => 'Italian',
+        'japanese' => 'Japanese',
+        'korean' => 'Korean',
+        'latvian' => 'Latvian',
+        'lithuanian' => 'Lithuanian',
+        'malay' => 'Malay',
+        'norwegian' => 'Norwegian',
+        'persian' => 'Persian',
+        'polish' => 'Polish',
+        'portuguese' => 'European Portuguese',
+        'romanian' => 'Romanian',
+        'russian' => 'Russian',
+        'serbian' => 'Serbian (Latin)',
+        'slovak' => 'Slovak',
+        'slovenian' => 'Slovenian',
+        'spanish' => 'Spanish',
+        'swahili' => 'Swahili',
+        'swedish' => 'Swedish',
+        'taiwanese' => 'Traditional Chinese',
+        'tamil' => 'Tamil',
+        'thai' => 'Thai',
+        'turkish' => 'Turkish',
+        'ukrainian' => 'Ukrainian',
+        'urdu' => 'Urdu',
+        'vietnamese' => 'Vietnamese',
+    ];
+
+    private string $workingDir;
+
+    public function __construct()
+    {
+        $this->workingDir = getcwd() ?: '.';
+    }
+
+    public function run(array $argv): int
+    {
+        $command = $argv[1] ?? null;
+        $target = $argv[2] ?? null;
+
+        if ($command !== 'new' || $target === null) {
+            $this->printUsage();
+
+            return 1;
+        }
+
+        $projectDir = $this->resolvePath($target);
+
+        try {
+            $installMode = $this->promptForInstallMode();
+            $languages = $this->promptForLanguages();
+
+            if ($installMode === self::INSTALL_MODE_CLONE) {
+                $this->guardGitExists();
+            }
+
+            if ($installMode === self::INSTALL_MODE_RELEASE) {
+                $this->guardZipArchiveExists();
+            }
+
+            $this->guardTargetDirectory($projectDir);
+
+            $this->line('');
+            $this->line('Creating CiSkeleton project...');
+            $this->line('Target: ' . $projectDir);
+            $this->line('Install mode: ' . $installMode);
+            $this->line('Languages: ' . implode(', ', $languages));
+
+            $this->mkdir($projectDir);
+
+            $tmpDir = $projectDir . DS . '.install';
+
+            try {
+                $this->mkdir($tmpDir);
+
+                $this->installCore($projectDir, $tmpDir, $installMode);
+                $this->installLanguages($projectDir, $tmpDir, $installMode, $languages);
+                $this->installApplication($projectDir, $tmpDir, $installMode);
+                $this->publishPublicFiles($projectDir);
+                $this->installCommon($projectDir, $tmpDir, $installMode);
+
+                $this->removeDirectory($tmpDir);
+
+                $this->line('');
+                $this->success('CiSkeleton project created successfully.');
+                $this->line('');
+                $this->line('Next:');
+                $this->line('  cd ' . escapeshellarg($projectDir));
+                $this->line('  php -S localhost:8000 index.php');
+
+                return 0;
+            } catch (Throwable $e) {
+                $this->removeDirectory($tmpDir);
+
+                throw $e;
+            }
+        } catch (Throwable $e) {
+            $this->error($e->getMessage());
+
+            return 1;
+        }
+    }
+
+    private function installCore(string $projectDir, string $tmpDir, string $installMode): void
+    {
+        $this->line('');
+        $this->line('Installing system/src into system/');
+
+        $this->installRepositorySource(
+            repository: self::CORE_REPOSITORY,
+            sourceDirectory: 'src',
+            destination: $projectDir . DS . 'system',
+            tmpDir: $tmpDir,
+            installMode: $installMode
+        );
+    }
+
+    private function installApplication(string $projectDir, string $tmpDir, string $installMode): void
+    {
+        $this->line('');
+        $this->line('Installing app-default/src into application/');
+
+        $this->installRepositorySource(
+            repository: self::APP_REPOSITORY,
+            sourceDirectory: 'src',
+            destination: $projectDir . DS . 'application',
+            tmpDir: $tmpDir,
+            installMode: $installMode
+        );
+    }
+
+    private function publishPublicFiles(string $projectDir): void
+    {
+        $publicDir = $projectDir . DS . 'application' . DS . 'public';
+
+        if (!is_dir($publicDir)) {
+            throw new RuntimeException('Missing application/public directory.');
+        }
+
+        $this->line('');
+        $this->line('Publishing application/public into project root');
+
+        $this->copyDirectory($publicDir, $projectDir);
+
+        // The project root becomes the public web root.
+        // Keeping a duplicate application/public directory would be confusing.
+        $this->removeDirectory($publicDir);
+    }
+
+    private function installCommon(string $projectDir, string $tmpDir, string $installMode): void
+    {
+        $this->line('');
+        $this->line('Installing common/src into content/common/');
+
+        $this->installRepositorySource(
+            repository: self::COMMON_REPOSITORY,
+            sourceDirectory: 'src',
+            destination: $projectDir . DS . 'content' . DS . 'common',
+            tmpDir: $tmpDir,
+            installMode: $installMode
+        );
+    }
+
+    /**
+     * Install selected language packs.
+     *
+     * English is always installed.
+     *
+     * @param list<string> $languages
+     */
+    private function installLanguages(
+        string $projectDir,
+        string $tmpDir,
+        string $installMode,
+        array $languages
+    ): void {
+        $this->line('');
+
+        foreach ($languages as $language) {
+            if (!isset(self::LANGUAGES[$language])) {
+                throw new RuntimeException("Unsupported language: {$language}");
+            }
+
+            $repository = 'lang-' . $language;
+            $destination = $projectDir . DS . 'system' . DS . 'language' . DS . $language;
+
+            $this->line(sprintf(
+                'Installing %s/src into system/language/%s/',
+                $repository,
+                $language
+            ));
+
+            $this->installRepositorySource(
+                repository: $repository,
+                sourceDirectory: 'src',
+                destination: $destination,
+                tmpDir: $tmpDir,
+                installMode: $installMode
+            );
+        }
+    }
+
+    private function installRepositorySource(
+        string $repository,
+        string $sourceDirectory,
+        string $destination,
+        string $tmpDir,
+        string $installMode
+    ): void {
+        $repoDir = match ($installMode) {
+            self::INSTALL_MODE_RELEASE => $this->downloadLatestRelease($repository, $tmpDir),
+            self::INSTALL_MODE_CLONE => $this->cloneRepository($repository, $tmpDir),
+            default => throw new RuntimeException("Unsupported install mode: {$installMode}"),
+        };
+
+        $source = $repoDir . DS . $sourceDirectory;
+
+        if (!is_dir($source)) {
+            throw new RuntimeException(sprintf(
+                'Repository %s does not contain expected directory: %s',
+                $repository,
+                $sourceDirectory
+            ));
+        }
+
+        $this->copyDirectory($source, $destination);
+    }
+
+    private function cloneRepository(string $repository, string $tmpDir): string
+    {
+        $repoUrl = sprintf(
+            'https://github.com/%s/%s.git',
+            self::GITHUB_OWNER,
+            $repository
+        );
+
+        $destination = $tmpDir . DS . $repository;
+
+        $command = sprintf(
+            'git clone --depth=1 %s %s',
+            escapeshellarg($repoUrl),
+            escapeshellarg($destination)
+        );
+
+        $this->runShell($command);
+
+        return $destination;
+    }
+
+    private function downloadLatestRelease(string $repository, string $tmpDir): string
+    {
+        $release = $this->getLatestRelease($repository);
+
+        if (!isset($release['zipball_url']) || !is_string($release['zipball_url'])) {
+            throw new RuntimeException("Latest release for {$repository} does not contain a zipball_url.");
+        }
+
+        $zipFile = $tmpDir . DS . $repository . '.zip';
+        $extractDir = $tmpDir . DS . $repository;
+
+        $this->downloadFile($release['zipball_url'], $zipFile);
+        $this->extractZip($zipFile, $extractDir);
+
+        @unlink($zipFile);
+
+        return $this->findSingleExtractedDirectory($extractDir);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function getLatestRelease(string $repository): array
+    {
+        $url = sprintf(
+            'https://api.github.com/repos/%s/%s/releases/latest',
+            self::GITHUB_OWNER,
+            $repository
+        );
+
+        $response = $this->httpGet($url);
+        $statusCode = $response['statusCode'];
+        $body = $response['body'];
+
+        $data = json_decode($body, true);
+
+        if (!is_array($data)) {
+            throw new RuntimeException("Invalid GitHub API response for {$repository}.");
+        }
+
+        if ($statusCode !== 200) {
+            $message = isset($data['message']) && is_string($data['message'])
+                ? $data['message']
+                : 'Unknown GitHub API error.';
+
+            throw new RuntimeException("Unable to fetch latest release for {$repository}: {$message}");
+        }
+
+        return $data;
+    }
+
+    private function downloadFile(string $url, string $destination): void
+    {
+        $response = $this->httpGet($url);
+        $statusCode = $response['statusCode'];
+
+        if ($statusCode < 200 || $statusCode >= 300) {
+            throw new RuntimeException("Failed to download release archive. HTTP status: {$statusCode}");
+        }
+
+        if (file_put_contents($destination, $response['body']) === false) {
+            throw new RuntimeException("Failed to write downloaded archive: {$destination}");
+        }
+    }
+
+    /**
+     * @return array{statusCode: int, body: string}
+     */
+    private function httpGet(string $url): array
+    {
+        $headers = [
+            'User-Agent: CiSkeleton-Installer',
+            'Accept: application/vnd.github+json',
+            'X-GitHub-Api-Version: 2022-11-28',
+        ];
+
+        $token = getenv('CSK_GITHUB_TOKEN');
+
+        if (is_string($token) && trim($token) !== '') {
+            $headers[] = 'Authorization: Bearer ' . trim($token);
+        }
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'header' => implode("\r\n", $headers),
+                'ignore_errors' => true,
+                'follow_location' => 1,
+                'max_redirects' => 5,
+                'timeout' => 60,
+            ],
+        ]);
+
+        $body = file_get_contents($url, false, $context);
+
+        if ($body === false) {
+            throw new RuntimeException("HTTP request failed: {$url}");
+        }
+
+        $statusCode = $this->extractHttpStatusCode($http_response_header ?? []);
+
+        return [
+            'statusCode' => $statusCode,
+            'body' => $body,
+        ];
+    }
+
+    /**
+     * @param list<string> $headers
+     */
+    private function extractHttpStatusCode(array $headers): int
+    {
+        $statusCode = 0;
+
+        foreach ($headers as $header) {
+            if (preg_match('/^HTTP\/\S+\s+(\d{3})/i', $header, $matches) === 1) {
+                $statusCode = (int) $matches[1];
+            }
+        }
+
+        return $statusCode;
+    }
+
+    private function extractZip(string $zipFile, string $destination): void
+    {
+        $this->mkdir($destination);
+
+        $zip = new ZipArchive();
+        $opened = $zip->open($zipFile);
+
+        if ($opened !== true) {
+            throw new RuntimeException("Failed to open release archive: {$zipFile}");
+        }
+
+        if (!$zip->extractTo($destination)) {
+            $zip->close();
+
+            throw new RuntimeException("Failed to extract release archive: {$zipFile}");
+        }
+
+        $zip->close();
+    }
+
+    private function findSingleExtractedDirectory(string $extractDir): string
+    {
+        $items = array_values(array_filter(
+            scandir($extractDir) ?: [],
+            static fn (string $item): bool => $item !== '.' && $item !== '..'
+        ));
+
+        foreach ($items as $item) {
+            $path = $extractDir . DS . $item;
+
+            if (is_dir($path)) {
+                return $path;
+            }
+        }
+
+        throw new RuntimeException("Release archive did not contain an extracted repository directory: {$extractDir}");
+    }
+
+    private function promptForInstallMode(): string
+    {
+        if (!$this->isInteractive()) {
+            return self::INSTALL_MODE_RELEASE;
+        }
+
+        $this->line('');
+        $this->line('How do you want to install CiSkeleton repositories?');
+        $this->line('');
+        $this->line('  [1] Latest stable GitHub releases');
+        $this->line('  [2] Clone repositories directly');
+        $this->line('');
+        $this->line('Choose install mode [1]:');
+
+        $input = trim((string) fgets(STDIN));
+
+        if ($input === '' || $input === '1') {
+            return self::INSTALL_MODE_RELEASE;
+        }
+
+        if ($input === '2') {
+            return self::INSTALL_MODE_CLONE;
+        }
+
+        throw new RuntimeException("Invalid install mode selection: {$input}");
+    }
+
+    /**
+     * Ask the user which language packs should be installed.
+     *
+     * English is always installed.
+     *
+     * @return list<string>
+     */
+    private function promptForLanguages(): array
+    {
+        if (!$this->isInteractive()) {
+            return ['english'];
+        }
+
+        $availableLanguages = self::LANGUAGES;
+        unset($availableLanguages['english']);
+
+        $keys = array_keys($availableLanguages);
+        $labels = array_values($availableLanguages);
+
+        $this->line('');
+        $this->line('Select additional languages to install.');
+        $this->line('English is always installed by default.');
+        $this->line('');
+        $this->line('Type numbers separated by commas, type "all", or press Enter for English only.');
+        $this->line('');
+
+        foreach ($labels as $index => $label) {
+            $this->line(sprintf('  [%d] %s', $index + 1, $label));
+        }
+
+        $this->line('');
+        $this->line('Languages [English only]:');
+
+        $input = trim((string) fgets(STDIN));
+
+        if ($input === '') {
+            return ['english'];
+        }
+
+        if (strtolower($input) === 'all') {
+            return array_values(array_unique(array_merge(['english'], $keys)));
+        }
+
+        $selected = ['english'];
+        $parts = array_filter(array_map('trim', explode(',', $input)));
+
+        foreach ($parts as $part) {
+            if (!ctype_digit($part)) {
+                throw new RuntimeException("Invalid language selection: {$part}");
+            }
+
+            $number = (int) $part;
+
+            if ($number < 1 || $number > count($keys)) {
+                throw new RuntimeException("Language selection out of range: {$number}");
+            }
+
+            $selected[] = $keys[$number - 1];
+        }
+
+        return array_values(array_unique($selected));
+    }
+
+    private function copyDirectory(string $source, string $destination): void
+    {
+        if (!is_dir($source)) {
+            throw new RuntimeException("Source directory does not exist: {$source}");
+        }
+
+        $this->mkdir($destination);
+
+        $items = scandir($source);
+
+        if ($items === false) {
+            throw new RuntimeException("Unable to read directory: {$source}");
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $from = $source . DS . $item;
+            $to = $destination . DS . $item;
+
+            if (is_dir($from) && !is_link($from)) {
+                $this->copyDirectory($from, $to);
+                continue;
+            }
+
+            if (!copy($from, $to)) {
+                throw new RuntimeException("Failed to copy file: {$from}");
+            }
+        }
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (!is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory . DS . $item;
+
+            if (is_dir($path) && !is_link($path)) {
+                $this->removeDirectory($path);
+                continue;
+            }
+
+            @chmod($path, 0777);
+            @unlink($path);
+        }
+
+        @chmod($directory, 0777);
+        @rmdir($directory);
+    }
+
+    private function mkdir(string $directory): void
+    {
+        if (is_dir($directory)) {
+            return;
+        }
+
+        if (!mkdir($directory, 0755, true) && !is_dir($directory)) {
+            throw new RuntimeException("Failed to create directory: {$directory}");
+        }
+    }
+
+    private function guardGitExists(): void
+    {
+        $output = [];
+        $status = 0;
+
+        exec('git --version 2>&1', $output, $status);
+
+        if ($status !== 0) {
+            throw new RuntimeException('Git is required when using clone mode, but Git was not found.');
+        }
+    }
+
+    private function guardZipArchiveExists(): void
+    {
+        if (!class_exists(ZipArchive::class)) {
+            throw new RuntimeException(
+                'PHP ZipArchive extension is required when using latest release mode.'
+            );
+        }
+    }
+
+    private function guardTargetDirectory(string $projectDir): void
+    {
+        if (!file_exists($projectDir)) {
+            return;
+        }
+
+        if (!is_dir($projectDir)) {
+            throw new RuntimeException("Target exists and is not a directory: {$projectDir}");
+        }
+
+        $items = array_diff(scandir($projectDir) ?: [], ['.', '..']);
+
+        if ($items !== []) {
+            throw new RuntimeException("Target directory is not empty: {$projectDir}");
+        }
+    }
+
+    private function resolvePath(string $path): string
+    {
+        if ($this->isAbsolutePath($path)) {
+            return rtrim($path, DS);
+        }
+
+        return rtrim($this->workingDir . DS . $path, DS);
+    }
+
+    private function isAbsolutePath(string $path): bool
+    {
+        return str_starts_with($path, DS) || preg_match('/^[A-Z]:\\\\/i', $path) === 1;
+    }
+
+    private function runShell(string $command): void
+    {
+        passthru($command, $status);
+
+        if ($status !== 0) {
+            throw new RuntimeException("Command failed: {$command}");
+        }
+    }
+
+    private function isInteractive(): bool
+    {
+        if (!defined('STDIN')) {
+            return false;
+        }
+
+        if (!function_exists('stream_isatty')) {
+            return false;
+        }
+
+        return stream_isatty(STDIN);
+    }
+
+    private function printUsage(): void
+    {
+        $this->line('Usage:');
+        $this->line('  csk new <directory>');
+    }
+
+    private function line(string $message): void
+    {
+        echo $message . PHP_EOL;
+    }
+
+    private function success(string $message): void
+    {
+        echo "\033[32m{$message}\033[0m" . PHP_EOL;
+    }
+
+    private function error(string $message): void
+    {
+        fwrite(STDERR, "\033[31mError: {$message}\033[0m" . PHP_EOL);
+    }
+}
+
+exit((new CskInstaller())->run($argv));

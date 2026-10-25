@@ -1,0 +1,29 @@
+{
+  "name": "ciskeleton/installer",
+  "description": "CiSkeleton project installer.",
+  "type": "library",
+  "license": "MIT",
+  "keywords": [
+    "ciskeleton",
+    "csk",
+    "codeigniter",
+    "codeigniter3",
+    "installer"
+  ],
+  "homepage": "https://github.com/ciskeleton/installer",
+  "support": {
+    "issues": "https://github.com/ciskeleton/installer/issues",
+    "source": "https://github.com/ciskeleton/installer"
+  },
+  "bin": [
+    "bin/csk"
+  ],
+  "require": {
+    "php": "^8.0"
+  },
+  "scripts": {
+    "lint": "php -l bin/csk"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

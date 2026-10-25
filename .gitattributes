@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+/bin/csk text eol=lf
+
+/.github export-ignore
+/.gitignore export-ignore
+/.gitattributes export-ignore
+/CONTRIBUTING.md export-ignore
+/SECURITY.md export-ignore
